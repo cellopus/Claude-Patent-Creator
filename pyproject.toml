@@ -58,6 +58,14 @@ llm = [
     "anthropic>=0.94.0", # Claude API for HyDE
     "openai>=2.31.0",    # OpenAI API for HyDE
 ]
+multilingual = [
+    # Opt-in support for ZH-native sources (CN Patent Law / Examination
+    # Guidelines in original Chinese). Enable by setting
+    # PATENT_EMBEDDING_MODE=multilingual; the index will use BGE-M3 (1024-dim)
+    # + bge-reranker-v2-m3 (both pulled by sentence-transformers from HF Hub).
+    # jieba provides word-level tokenization for BM25 over CJK chunks.
+    "jieba>=0.42.1",
+]
 
 [project.scripts]
 patent-creator = "mcp_server.cli:main"

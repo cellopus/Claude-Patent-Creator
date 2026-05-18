@@ -12,13 +12,14 @@ I built this because I needed to file a patent myself. I used AI to build the sy
 
 In plain terms, this tool lets you:
 
-- **Search patent regulations instantly.** Ask a question about MPEP, 35 USC, 37 CFR, EPC, or PCT rules and get the relevant sections in under a second, with citations.
-- **Find prior art across 100M+ patents.** Search Google's BigQuery patent database by keywords, CPC/IPC codes, or full-text queries. Link related patents across jurisdictions with family search.
-- **Check your claims for compliance.** Run your draft claims through automated analysis for USPTO (35 USC 112(b)) or EPO (Art. 84 EPC) and get specific feedback on definiteness, two-part form, and structure.
-- **Review your full application.** Specification adequacy, formalities, required sections — checked against USPTO, EPO, or PCT standards.
+- **Search patent regulations instantly.** Ask a question about MPEP, 35 USC, 37 CFR, EPC, PCT rules, or the Patent Law of the PRC and get the relevant sections in under a second, with citations.
+- **Find prior art across 100M+ patents.** Search Google's BigQuery patent database by keywords, CPC/IPC codes, or full-text queries (with `country="CN"` filtering for Chinese patents). Link related patents across jurisdictions with family search.
+- **Check your claims for compliance.** Run your draft claims through automated analysis for USPTO (35 USC 112(b)), EPO (Art. 84 EPC), or CNIPA (Art. 26.4 + Art. 25 + Rule 22 multi-multi dependency check) and get specific feedback on definiteness, two-part form, structure, and excluded subject matter.
+- **Review your full application.** Specification adequacy, formalities, required sections — checked against USPTO, EPO, PCT, or CNIPA standards (including the CN-specific Summary "triple" of technical problem / technical solution / beneficial effects).
 - **Search EP patents with full text.** Get full claims and description text for European patents via the EPO OPS API (not available in BigQuery).
 - **Generate patent diagrams.** Block diagrams, flowcharts, and system architectures in patent style, no design tools needed.
-- **Draft a complete patent application.** A guided workflow that walks you through the whole process, from invention disclosure to filing-ready documents — for USPTO or EPO filing.
+- **Draft a complete patent application.** A guided workflow that walks you through the whole process, from invention disclosure to filing-ready documents — for USPTO, EPO, or CNIPA filing.
+- **Index ZH-native Chinese sources** (opt-in). Set `PATENT_EMBEDDING_MODE=multilingual` to switch to BGE-M3 + jieba and index Chinese-language patent law and examination guidelines directly.
 
 ---
 
@@ -109,6 +110,8 @@ Here are some real examples. You can type these directly in Claude Code and the 
 | Create a patent from scratch | `/create-patent` | Guided 6-phase workflow, takes 55-80 min, produces a complete filing package |
 | Generate a diagram | "Create a block diagram showing the system architecture" | Generates a patent-style Graphviz diagram |
 | Search prior art thoroughly | "Conduct a prior art search for [your invention]" | Automated novelty and freedom-to-operate analysis |
+| Check CN claims for Art. 25(3) + Rule 22 | `/review-cnipa-claims` | Flags diagnostic/treatment-method language and multi-multi dependent claims |
+| Draft a CN application | `/create-cnipa-patent` | 7-phase CN workflow (Rule 17 canonical order, Summary triple, Rule 22-safe dependencies) |
 
 ---
 
@@ -207,13 +210,36 @@ patent-creator check-bigquery    # Test BigQuery connection
 | `get_uspto_patent` | Get patent details from USPTO |
 | `get_recent_uspto_patents` | Pull recent filings |
 
-### Analysis
+### Analysis (US)
 
 | Tool | What it does |
 |---|---|
 | `review_patent_claims` | 35 USC 112(b) compliance check (definiteness, antecedent basis, structure) |
 | `review_specification` | 35 USC 112(a) adequacy check (written description, enablement, best mode) |
 | `check_formalities` | MPEP 608 compliance (abstract, title, drawings, required sections) |
+
+### Analysis (EPO + PCT)
+
+| Tool | What it does |
+|---|---|
+| `review_epo_claims` | Art. 84 EPC compliance (clarity, conciseness, support, Rule 43 two-part form) |
+| `review_epo_specification` | Art. 83 EPC sufficiency of disclosure + Rule 42 description sections |
+| `check_epo_formalities` | Rules 42–49 EPC compliance (abstract ≤150 words, drawings, etc.) |
+| `check_pct_formalities` | PCT Rules 5–12 compliance |
+
+### Analysis (CNIPA)
+
+| Tool | What it does |
+|---|---|
+| `review_cnipa_claims` | Art. 26.4 clarity/support + Art. 25 excluded subject matter (incl. Art. 25(3) diagnostic/treatment methods) + Rule 22 multi-multi dependency ban + Rule 23 two-part form |
+| `review_cnipa_specification` | Art. 26.3 sufficiency + Rule 17 description structure + the Summary "triple" (技术问题 / 技术方案 / 有益效果) |
+| `check_cnipa_formalities` | Rules 17, 19, 20, 22, 24 (300 CJK-character abstract, 25-char title, consecutive numbering, Rule 22 audit) |
+
+### Cross-Jurisdiction
+
+| Tool | What it does |
+|---|---|
+| `search_patent_law` | Unified search across US (MPEP/USC/CFR), EPO (EPC/Guidelines), PCT (Treaty/Rules), and CN (Patent Law/Implementing Regs/Examination Guidelines) with optional `jurisdiction` filter |
 
 ### Generation
 
@@ -258,6 +284,12 @@ You don't need to call these directly. Just describe what you want to do and the
 | **development-assistant** | Adding features or creating tools | Development workflows and patterns |
 | **troubleshooting-assistant** | Something's broken | Systematic 6-step diagnostics |
 | **testing-assistant** | Running tests or validation | Test suite execution |
+| **epo-patent-analyzer** | Reviewing applications for EPO compliance | Art. 84 / Art. 83 / Rules 42–49 EPC |
+| **epo-patent-search** | Searching EP patents | EPO OPS API + BigQuery `country="EP"` |
+| **pct-application** | Preparing PCT international applications | PCT Rules 5–12 compliance |
+| **epc-search** | Searching EPC, EPO Guidelines, PCT rules | `search_patent_law` with jurisdiction filtering |
+| **cnipa-patent-analyzer** | Reviewing applications for CNIPA (China) compliance | Art. 26.4 / Art. 26.3 / Art. 25 + Rules 17/19/20/22/24 (incl. Rule 22 multi-multi and Summary triple) |
+| **cnipa-search** | Searching CN patents | BigQuery `country="CN"` + INPADOC family pivots for full text |
 
 ### Agents (long-running, work independently)
 
@@ -267,18 +299,36 @@ These run in the background while you keep working on other things.
 |---|---|---|---|
 | **patent-creator** | Drafts a complete USPTO-ready application | 55-80 min | Specification, claims, abstract, diagrams, validation report |
 | **prior-art-searcher** | Comprehensive prior art search | 15-30 min | Patentability report, top 10 prior art, claim strategy, IDS list |
+| **epo-patent-drafter** | Drafts an EPO-ready application (two-part form, problem-solution approach) | 60-180 min | EPC-compliant specification + claims + compliance reports |
+| **epo-patent-analyzer** | Reviews an application for EPO compliance | 15-30 min | Triaged Art. 84 / Art. 83 / Rules 42–49 issue list |
+| **cnipa-drafter** | Drafts a CN-ready application (Rule 17 canonical order, Summary triple, Rule 22-safe dependencies, Art. 25(3) avoidance) | 30-180 min | CN claims, specification, abstract, and compliance reports |
+| **cnipa-patent-specialist** | Reviews an application for CN compliance | 15-30 min | Triaged Art. 26.4 / Art. 26.3 / Art. 25 + Rules 17/19/20/22/24 issue list |
 
 To use them: "Create a patent for [your invention], use the patent-creator agent"
 
 ### Slash Commands
 
 ```
-/create-patent          # Complete patent creation workflow (55-80 min)
-/search-prior-art       # Prior art search with novelty analysis
-/full-review            # Parallel review (claims + spec + formalities)
-/review-claims          # Claims-only 35 USC 112(b) analysis
-/review-specification   # Specification-only 35 USC 112(a) analysis
-/review-formalities     # MPEP 608 formalities check
+# USPTO
+/create-patent             # Complete US patent creation workflow (55-80 min)
+/search-prior-art          # Prior art search with novelty analysis
+/full-review               # Parallel US review (claims + spec + formalities)
+/review-claims             # Claims-only 35 USC 112(b) analysis
+/review-specification      # Specification-only 35 USC 112(a) analysis
+/review-formalities        # MPEP 608 formalities check
+
+# EPO + PCT
+/create-epo-patent         # EPO patent creation workflow
+/review-epo-claims         # Art. 84 EPC claims analysis
+/review-epo-formalities    # Rules 42-49 EPC formalities check
+/check-pct-formalities     # PCT Rules 5-12 formalities check
+/search-epo                # EPO patent search (OPS API + BigQuery)
+
+# CNIPA (China)
+/create-cnipa-patent       # CN patent creation workflow (Rule 17 + Summary triple + Rule 22-safe)
+/review-cnipa-claims       # Art. 26.4 + Art. 25 + Rules 21/22/23 claims analysis
+/review-cnipa-specification# Art. 26.3 + Rule 17 specification review (incl. Summary triple)
+/review-cnipa-formalities  # Rules 17, 19, 20, 22, 24 formalities check (300 CJK-char abstract, Rule 22 audit)
 ```
 
 ---
@@ -309,6 +359,18 @@ PATENT_ENABLE_METRICS=true
 PATENT_MPEP_USE_HYDE=false
 PATENT_MPEP_DEVICE=gpu
 PATENT_OPERATION_TIMEOUT=300
+
+# Jurisdiction toggles
+PATENT_ENABLE_CN=true              # Index CN sources downloaded via --download-cn
+
+# Embedding mode
+# english (default) -> BGE-base-en-v1.5 (768-dim) + ms-marco-MiniLM-L-6-v2.
+#                       Use English translations of CN sources from WIPO Lex.
+# multilingual      -> BGE-M3 (1024-dim) + bge-reranker-v2-m3 + jieba for BM25.
+#                       Required to index ZH-native CN Patent Law / Examination Guidelines.
+#                       Install with: pip install 'claude-patent-creator[multilingual]'
+#                       Switching modes triggers a full index rebuild (incompatible dimensions).
+PATENT_EMBEDDING_MODE=english
 ```
 
 <details>
@@ -403,21 +465,27 @@ claude-patent-creator/
 ├── .claude-plugin/          # Plugin manifest and marketplace config
 ├── mcp_server/              # Core MCP server
 │   ├── server.py            # FastMCP entry point
-│   ├── mpep_search.py       # Hybrid RAG search engine
+│   ├── mpep_search.py       # Hybrid RAG search engine (EN + multilingual mode)
 │   ├── bigquery_search.py   # BigQuery patent search
 │   ├── claims_analyzer.py   # 35 USC 112(b) analyzer
-│   ├── specification_analyzer.py  # 112(a) analyzer
-│   ├── formalities_checker.py     # MPEP 608 checker
-│   ├── diagram_generator.py       # Graphviz diagrams
-│   ├── tools/               # MCP tool definitions
-│   └── index/               # FAISS + BM25 index (git-ignored)
-├── skills/                  # Claude Code skills (13)
-├── agents/                  # Autonomous agents (10)
-├── commands/                # Slash commands (11)
+│   ├── specification_analyzer.py     # 112(a) analyzer
+│   ├── formalities_checker.py        # MPEP 608 checker
+│   ├── epo_*.py                      # EPO analyzers + EPC/PCT downloaders + OPS API
+│   ├── pct_formalities_checker.py    # PCT Rules 5-12
+│   ├── cnipa_downloaders.py          # CN Patent Law + Regs from WIPO Lex
+│   ├── cnipa_claims_analyzer.py      # Art. 26.4 + Art. 25 + Rule 22 multi-multi
+│   ├── cnipa_specification_analyzer.py  # Art. 26.3 + Rule 17 + Summary triple
+│   ├── cnipa_formalities_checker.py  # Rules 17, 19, 20, 22, 24
+│   ├── diagram_generator.py          # Graphviz diagrams
+│   ├── tools/                        # MCP tool definitions (incl. cnipa_analyzer_tools)
+│   └── index/                        # FAISS + BM25 index + manifest (git-ignored)
+├── skills/                  # Claude Code skills (incl. cnipa-patent-analyzer, cnipa-search)
+├── agents/                  # Autonomous agents (incl. cnipa-drafter, cnipa-patent-specialist)
+├── commands/                # Slash commands (US + EPO + PCT + CN)
 ├── hooks/                   # Event-driven automation
 ├── scripts/                 # Testing and utilities
 ├── docs/                    # Additional documentation
-├── pdfs/                    # Downloaded MPEP PDFs (git-ignored)
+├── pdfs/                    # Downloaded MPEP/EPC/PCT/CN PDFs (git-ignored)
 └── CLAUDE.md                # Full project documentation
 ```
 
@@ -471,6 +539,10 @@ If you're coming from the development side and patent terminology is new (or vic
 | **112(a)** | The section of patent law requiring your application to fully describe and enable the invention. |
 | **112(b)** | The section requiring your claims to be definite and clear. |
 | **MPEP 608** | The section covering formalities like abstract length, title format, and drawing requirements. |
+| **CNIPA** | China National Intellectual Property Administration. The agency that grants Chinese patents. |
+| **Art. 25(3) PRC** | The Patent Law of the PRC clause that excludes methods for diagnosis or treatment of diseases from patentability. The biggest delta from US practice — apparatus and second-medical-use claims are still patentable. |
+| **Rule 22 (PRC)** | Implementing-Regulation rule that forbids a multiple-dependent claim from citing another multiple-dependent claim. The single most common CN-specific rejection. |
+| **Rule 17 (PRC)** | The rule prescribing the canonical order of description sections: 技术领域 → 背景技术 → 发明内容 → 附图说明 → 具体实施方式. Summary section must explicitly contain the "triple" (technical problem / technical solution / beneficial effects). |
 | **RAG** | Retrieval Augmented Generation. Instead of relying only on what the AI was trained on, it searches a database first and uses those results to give a better answer. |
 | **FAISS** | Facebook AI Similarity Search. A fast way to find similar text by comparing mathematical representations of meaning. |
 | **BM25** | A text search algorithm that matches exact words and phrases. Works alongside FAISS to catch things vector search might miss. |
@@ -481,10 +553,13 @@ If you're coming from the development side and patent terminology is new (or vic
 
 ## Roadmap
 
-- [x] Support for international patent offices (EPO, WIPO/PCT)
+- [x] Support for international patent offices (EPO, WIPO/PCT, CNIPA)
+- [x] Multilingual embedding mode for ZH-native indexing (BGE-M3 + jieba)
+- [ ] Added-matter analysis (Art. 123(2) EPC, Art. 33 Patent Law of the PRC)
+- [ ] JPO (Japan) and KIPO (Korea) jurisdictions
 - [ ] Web interface for non-Claude Code users
 - [ ] Claim dependency graph visualization
-- [ ] Automated obviousness analysis (35 USC 103)
+- [ ] Automated obviousness analysis (35 USC 103 / Art. 56 EPC / Art. 22 Patent Law of the PRC)
 - [ ] Patent portfolio analysis tools
 - [ ] Integration with patent drafting software
 
@@ -506,7 +581,7 @@ This project builds on excellent open source work: [FastMCP](https://github.com/
 
 ### Data Sources
 
-MPEP, 35 USC, and 37 CFR are published by the USPTO. Patent data comes from Google BigQuery's `patents-public-data` dataset (100M+ patents). Embedding models are [BGE-base-en-v1.5](https://huggingface.co/BAAI/bge-base-en-v1.5) (BAAI) and [MS-MARCO MiniLM-L-6-v2](https://huggingface.co/cross-encoder/ms-marco-MiniLM-L-6-v2) (Microsoft).
+MPEP, 35 USC, and 37 CFR are published by the USPTO. EPC and EPO Guidelines are published by the European Patent Office; PCT Treaty and Rules by WIPO. The Patent Law of the PRC and its Implementing Regulations are sourced from WIPO Lex. Patent data comes from Google BigQuery's `patents-public-data` dataset (100M+ patents, including ~15M CN publications). Default embedding models are [BGE-base-en-v1.5](https://huggingface.co/BAAI/bge-base-en-v1.5) (BAAI) and [MS-MARCO MiniLM-L-6-v2](https://huggingface.co/cross-encoder/ms-marco-MiniLM-L-6-v2) (Microsoft); multilingual mode uses [BGE-M3](https://huggingface.co/BAAI/bge-m3) and [bge-reranker-v2-m3](https://huggingface.co/BAAI/bge-reranker-v2-m3) (BAAI) with [jieba](https://github.com/fxsjy/jieba) for CJK tokenization.
 
 ### Trademark Notice
 

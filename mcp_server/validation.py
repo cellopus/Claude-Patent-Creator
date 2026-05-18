@@ -36,7 +36,7 @@ class SearchMPEPInput(BaseModel):  # type: ignore[misc]
     )
     source_filter: Optional[str] = Field(
         default=None,
-        description="Filter by source: US (MPEP, 35_USC, 37_CFR, SUBSEQUENT), EPO (EPC, EPC_RULES, EPO_GUIDELINES), PCT (PCT, PCT_RULES)",
+        description="Filter by source: US (MPEP, 35_USC, 37_CFR, SUBSEQUENT), EPO (EPC, EPC_RULES, EPO_GUIDELINES), PCT (PCT, PCT_RULES), CN (CN_PATENT_LAW, CN_REGULATIONS, CN_GUIDELINES)",
     )
     is_statute: Optional[bool] = Field(default=None, description="Filter for statutes only")
     is_regulation: Optional[bool] = Field(default=None, description="Filter for regulations only")
@@ -57,6 +57,9 @@ class SearchMPEPInput(BaseModel):  # type: ignore[misc]
                 "EPO_GUIDELINES",
                 "PCT",
                 "PCT_RULES",
+                "CN_PATENT_LAW",
+                "CN_REGULATIONS",
+                "CN_GUIDELINES",
             }
             if v not in valid_sources:
                 raise ValueError(f"source_filter must be one of {valid_sources}")
@@ -213,7 +216,7 @@ class SearchPatentLawInput(BaseModel):  # type: ignore[misc]
     )
     jurisdiction: Optional[str] = Field(
         default=None,
-        description="Filter by jurisdiction: US, EPO, PCT, or None for all",
+        description="Filter by jurisdiction: US, EPO, PCT, CN, or None for all",
     )
 
     @field_validator("jurisdiction")
@@ -221,7 +224,7 @@ class SearchPatentLawInput(BaseModel):  # type: ignore[misc]
     def validate_jurisdiction(cls, v: Optional[str]) -> Optional[str]:
         """Validate jurisdiction filter."""
         if v is not None:
-            valid_jurisdictions = {"US", "EPO", "PCT"}
+            valid_jurisdictions = {"US", "EPO", "PCT", "CN"}
             v = v.upper()
             if v not in valid_jurisdictions:
                 raise ValueError(f"jurisdiction must be one of {valid_jurisdictions}")

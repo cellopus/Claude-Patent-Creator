@@ -272,6 +272,7 @@ def download_subsequent_publications(dest_dir: Path = MPEP_DIR) -> bool:
 def check_all_sources(dest_dir: Path = MPEP_DIR) -> dict[str, bool]:
     """Check which source documents are available"""
     from epo_downloaders import EPC_FILE, EPO_GUIDELINES_FILE, PCT_GUIDELINES_FILE, PCT_RULES_FILE, PCT_TREATY_FILE
+    from cnipa_downloaders import CN_GUIDELINES_FILE, CN_PATENT_LAW_FILE, CN_REGULATIONS_FILE
 
     us_sources = {
         "mpep": check_mpep_pdfs(dest_dir) > 0,
@@ -286,7 +287,12 @@ def check_all_sources(dest_dir: Path = MPEP_DIR) -> dict[str, bool]:
         "pct_rules": (dest_dir / PCT_RULES_FILE).exists(),
         "pct_guidelines": (dest_dir / PCT_GUIDELINES_FILE).exists(),
     }
-    return {**us_sources, **epo_pct_sources}
+    cn_sources = {
+        "cn_patent_law": (dest_dir / CN_PATENT_LAW_FILE).exists(),
+        "cn_regulations": (dest_dir / CN_REGULATIONS_FILE).exists(),
+        "cn_guidelines": (dest_dir / CN_GUIDELINES_FILE).exists(),
+    }
+    return {**us_sources, **epo_pct_sources, **cn_sources}
 
 
 # ============================================================================
@@ -361,6 +367,32 @@ def _register_all_tools():
         )
     except ImportError as e:
         _log_warning(f"EPO/PCT analyzer tools not available: {e}")
+
+    # CNIPA analyzers
+    try:
+        from cnipa_claims_analyzer import CNIPAClaimsAnalyzer
+        from cnipa_formalities_checker import CNIPAFormalitiesChecker
+        from cnipa_specification_analyzer import CNIPASpecificationAnalyzer
+        from tools.cnipa_analyzer_tools import register_cnipa_analyzer_tools
+
+        register_cnipa_analyzer_tools(
+            mcp=mcp,
+            mpep_index=mpep_index,
+            CNIPAFormalitiesChecker=CNIPAFormalitiesChecker,
+            CNIPAClaimsAnalyzer=CNIPAClaimsAnalyzer,
+            CNIPASpecificationAnalyzer=CNIPASpecificationAnalyzer,
+            log_info=_log_info,
+            log_warning=_log_warning,
+            log_error=_log_error,
+            validate_input=validate_input,
+            CheckFormalitiesInput=CheckFormalitiesInput,
+            ReviewClaimsInput=ReviewClaimsInput,
+            ReviewSpecificationInput=ReviewSpecificationInput,
+            track_performance=track_performance,
+            log_operation_result=log_operation_result,
+        )
+    except ImportError as e:
+        _log_warning(f"CNIPA analyzer tools not available: {e}")
 
     register_uspto_tools(
         mcp=mcp,
@@ -449,6 +481,9 @@ def _parse_args():
         "--download-pct", action="store_true", help="Download PCT sources (Treaty + Rules + Guidelines)"
     )
     parser.add_argument(
+        "--download-cn", action="store_true", help="Download CN sources (Patent Law + Regulations + Guidelines)"
+    )
+    parser.add_argument(
         "--mpep-url", type=str, default=MPEP_DOWNLOAD_URL, help="Custom MPEP download URL"
     )
     parser.add_argument("--no-hyde", action="store_true", help="Disable HyDE query expansion")
@@ -532,6 +567,20 @@ def _handle_additional_downloads(args):
                 if success:
                     downloads_performed.append(f"PCT:{name}")
 
+    # CN sources (cnipa_downloaders skips existing files internally)
+    if args.download_all or args.download_cn:
+        from cnipa_downloaders import check_cnipa_sources, download_all_cn_documents
+
+        cn_status = check_cnipa_sources(MPEP_DIR)
+        if cn_status.get("cn_patent_law") and cn_status.get("cn_regulations"):
+            print("\n[OK] CN sources already present", file=sys.stderr)
+        else:
+            print("\nDownloading CN sources...", file=sys.stderr)
+            cn_results = download_all_cn_documents(MPEP_DIR)
+            for name, success in cn_results.items():
+                if success:
+                    downloads_performed.append(f"CN:{name}")
+
     if downloads_performed:
         print(f"\n[OK] Successfully downloaded: {', '.join(downloads_performed)}", file=sys.stderr)
         print(
@@ -557,6 +606,10 @@ def _handle_additional_downloads(args):
     print(f"  PCT Treaty:{'[OK]' if sources_status.get('pct_treaty') else '[X]'}", file=sys.stderr)
     print(f"  PCT Rules: {'[OK]' if sources_status.get('pct_rules') else '[X]'}", file=sys.stderr)
     print(f"  PCT Guide: {'[OK]' if sources_status.get('pct_guidelines') else '[X]'}", file=sys.stderr)
+    print("  --- CN Sources ---", file=sys.stderr)
+    print(f"  CN Law:    {'[OK]' if sources_status.get('cn_patent_law') else '[X]'}", file=sys.stderr)
+    print(f"  CN Regs:   {'[OK]' if sources_status.get('cn_regulations') else '[X]'}", file=sys.stderr)
+    print(f"  CN Guide:  {'[OK]' if sources_status.get('cn_guidelines') else '[X]'}", file=sys.stderr)
     sys.exit(0)
 
 
@@ -629,6 +682,7 @@ def main():
         or args.download_updates
         or args.download_epo
         or args.download_pct
+        or args.download_cn
     ):
         _handle_additional_downloads(args)
 

@@ -6,6 +6,8 @@ Extracted from server.py to work as a standalone library
 """
 
 import json
+import os
+import re
 import sys
 from pathlib import Path
 from typing import Any, Optional
@@ -130,6 +132,101 @@ def _log_debug(message: str, **kwargs):
         logger.debug(message, extra=kwargs)
 
 
+# =============================================================================
+# Embedding mode: english (default) vs multilingual.
+#
+# english      — BGE-base-en-v1.5 (768-dim) + ms-marco-MiniLM-L-6-v2 reranker.
+#                Indexed sources should be English (US, EPO, PCT, and the
+#                WIPO Lex English translation of CN Patent Law + Regs).
+# multilingual — BGE-M3 (1024-dim) + bge-reranker-v2-m3.
+#                Required for ZH-native CN sources or any other CJK corpus.
+#                Larger memory footprint; index built in this mode is NOT
+#                compatible with english-mode indexes (different dimension).
+# =============================================================================
+
+_EMBEDDING_MODES: dict[str, dict[str, Any]] = {
+    "english": {
+        "embedding_model": "BAAI/bge-base-en-v1.5",
+        "reranker_model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+        "dimension": 768,
+    },
+    "multilingual": {
+        "embedding_model": "BAAI/bge-m3",
+        "reranker_model": "BAAI/bge-reranker-v2-m3",
+        "dimension": 1024,
+    },
+}
+
+
+def _resolve_embedding_mode() -> str:
+    """Read PATENT_EMBEDDING_MODE from the environment; default to english."""
+    mode = os.environ.get("PATENT_EMBEDDING_MODE", "english").strip().lower()
+    if mode not in _EMBEDDING_MODES:
+        _log_warning(
+            f"Unknown PATENT_EMBEDDING_MODE='{mode}'. Falling back to 'english'."
+        )
+        return "english"
+    return mode
+
+
+# CJK detection for the BM25 tokenizer — CJK Unified Ideographs block.
+_CJK_RE = re.compile(r"[一-鿿]")
+
+# Lazy import of jieba — only loaded if needed and available.
+_jieba = None
+_jieba_checked = False
+
+
+def _get_jieba():
+    """Return the jieba module if installed, else None. Idempotent."""
+    global _jieba, _jieba_checked
+    if _jieba_checked:
+        return _jieba
+    _jieba_checked = True
+    try:
+        import jieba as _jieba_mod  # type: ignore[import-not-found]
+
+        _jieba = _jieba_mod
+        _log_info("jieba available — using it for CJK BM25 tokenization")
+    except ImportError:
+        _jieba = None
+        _log_info(
+            "jieba not installed — falling back to per-character CJK tokenization "
+            "for BM25. Install with: pip install 'claude-patent-creator[multilingual]' "
+            "or: pip install jieba"
+        )
+    return _jieba
+
+
+def _is_cjk_dominant(text: str, threshold: float = 0.3) -> bool:
+    """Return True if at least `threshold` of the non-whitespace characters are CJK."""
+    if not text:
+        return False
+    non_ws = [c for c in text if not c.isspace()]
+    if not non_ws:
+        return False
+    cjk = sum(1 for c in non_ws if _CJK_RE.match(c))
+    return (cjk / len(non_ws)) >= threshold
+
+
+def _tokenize_for_bm25(text: str) -> list[str]:
+    """Tokenize text for BM25, routing CJK to a word-level tokenizer.
+
+    - English / Latin-script text: lowercase + whitespace split (existing behavior).
+    - CJK-dominant text: jieba.cut when available; otherwise per-character
+      fallback. Whitespace split would yield a single giant token for ZH text
+      and break BM25 entirely, so per-character is a poor-but-functional
+      backstop.
+    """
+    if not _is_cjk_dominant(text):
+        return text.lower().split()
+    jieba = _get_jieba()
+    if jieba is not None:
+        return [tok for tok in jieba.cut(text) if tok.strip()]
+    # Per-character fallback for CJK without jieba
+    return [c for c in text if not c.isspace()]
+
+
 class MPEPIndex:
     """Manages indexing and retrieval of MPEP documents with advanced RAG techniques"""
 
@@ -146,11 +243,23 @@ class MPEPIndex:
         # Detect and use GPU if available
         self.device = get_device()
 
-        _log_info("Loading embedding model (BGE-base)...", device=self.device)
-        self.model = SentenceTransformer("BAAI/bge-base-en-v1.5", device=self.device)  # type: ignore[misc]
+        # Pick embedding + reranker models based on PATENT_EMBEDDING_MODE
+        self.embedding_mode = _resolve_embedding_mode()
+        cfg = _EMBEDDING_MODES[self.embedding_mode]
+        self.embedding_model_name: str = cfg["embedding_model"]
+        self.reranker_model_name: str = cfg["reranker_model"]
+        self.expected_dimension: int = cfg["dimension"]
 
-        _log_info("Loading reranker model...", device=self.device)
-        self.reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2", device=self.device)  # type: ignore[misc]
+        _log_info(
+            f"Loading embedding model ({self.embedding_model_name}) in mode={self.embedding_mode}...",
+            device=self.device,
+            mode=self.embedding_mode,
+            dimension=self.expected_dimension,
+        )
+        self.model = SentenceTransformer(self.embedding_model_name, device=self.device)  # type: ignore[misc]
+
+        _log_info(f"Loading reranker model ({self.reranker_model_name})...", device=self.device)
+        self.reranker = CrossEncoder(self.reranker_model_name, device=self.device)  # type: ignore[misc]
 
         # Initialize HyDE query expander
         self.use_hyde = use_hyde
@@ -174,6 +283,7 @@ class MPEPIndex:
         self.index_file = INDEX_DIR / "mpep_index.faiss"
         self.metadata_file = INDEX_DIR / "mpep_metadata.json"
         self.bm25_file = INDEX_DIR / "mpep_bm25.json"
+        self.manifest_file = INDEX_DIR / "mpep_manifest.json"
 
     def extract_text_from_pdf(self, pdf_path: Path) -> list[dict[str, Any]]:
         """Extract text from PDF with contextual metadata"""
@@ -741,6 +851,210 @@ class MPEPIndex:
         _log_info(f"Extracted {len(chunks)} PCT Rules chunks", chunk_count=len(chunks))
         return chunks
 
+    def extract_text_from_cn_patent_law(self, pdf_path: Path) -> list[dict[str, Any]]:
+        """Extract text from Patent Law of the PRC (English translation).
+
+        Detects article headers ("Article 1", "Article 22", etc.) and emits
+        chunks tagged source="CN_PATENT_LAW".
+        """
+        import re
+
+        chunks = []
+        doc = None
+        try:
+            doc = fitz.open(pdf_path)  # type: ignore[union-attr]
+            current_article = "CN Patent Law"
+
+            for page_num, page in enumerate(doc):  # type: ignore[arg-type]
+                text = page.get_text()
+                if not text.strip():
+                    continue
+
+                # Detect article headers: "Article 26", optional title on next line
+                art_matches = list(
+                    re.finditer(r"Article\s+(\d+)\s*\n?\s*([^\n]{0,100})", text)
+                )
+
+                if art_matches:
+                    for match in art_matches:
+                        art_num = match.group(1)
+                        art_title = match.group(2).strip()
+                        current_article = (
+                            f"Art. {art_num} CN Patent Law - {art_title}"
+                            if art_title
+                            else f"Art. {art_num} CN Patent Law"
+                        )
+
+                page_chunks = self._chunk_text_with_metadata(
+                    text=text,
+                    section_label=current_article,
+                    base_metadata={
+                        "source": "CN_PATENT_LAW",
+                        "file": pdf_path.name,
+                        "section": current_article,
+                        "page": page_num + 1,
+                        "is_statute": True,
+                        "is_regulation": False,
+                        "is_update": False,
+                    },
+                )
+                chunks.extend(page_chunks)
+
+        except Exception as e:
+            _log_error(
+                f"Error processing CN Patent Law {pdf_path}: {e}",
+                exc_info=True,
+                file_path=str(pdf_path),
+            )
+        finally:
+            if doc is not None:
+                doc.close()
+
+        _log_info(f"Extracted {len(chunks)} CN Patent Law chunks", chunk_count=len(chunks))
+        return chunks
+
+    def extract_text_from_cn_regulations(self, pdf_path: Path) -> list[dict[str, Any]]:
+        """Extract text from Implementing Regulations of the Patent Law (PRC).
+
+        Detects rule headers ("Rule 1", "Rule 22", etc.) and emits chunks
+        tagged source="CN_REGULATIONS".
+        """
+        import re
+
+        chunks = []
+        doc = None
+        try:
+            doc = fitz.open(pdf_path)  # type: ignore[union-attr]
+            current_rule = "CN Implementing Regulations"
+
+            for page_num, page in enumerate(doc):  # type: ignore[arg-type]
+                text = page.get_text()
+                if not text.strip():
+                    continue
+
+                rule_matches = list(
+                    re.finditer(r"Rule\s+(\d+)\s*\n?\s*([^\n]{0,100})", text)
+                )
+
+                if rule_matches:
+                    for match in rule_matches:
+                        rule_num = match.group(1)
+                        rule_title = match.group(2).strip()
+                        current_rule = (
+                            f"CN Rule {rule_num} - {rule_title}"
+                            if rule_title
+                            else f"CN Rule {rule_num}"
+                        )
+
+                page_chunks = self._chunk_text_with_metadata(
+                    text=text,
+                    section_label=current_rule,
+                    base_metadata={
+                        "source": "CN_REGULATIONS",
+                        "file": pdf_path.name,
+                        "section": current_rule,
+                        "page": page_num + 1,
+                        "is_statute": False,
+                        "is_regulation": True,
+                        "is_update": False,
+                    },
+                )
+                chunks.extend(page_chunks)
+
+        except Exception as e:
+            _log_error(
+                f"Error processing CN Regulations {pdf_path}: {e}",
+                exc_info=True,
+                file_path=str(pdf_path),
+            )
+        finally:
+            if doc is not None:
+                doc.close()
+
+        _log_info(f"Extracted {len(chunks)} CN Regulations chunks", chunk_count=len(chunks))
+        return chunks
+
+    def extract_text_from_cn_examination_guidelines(
+        self, pdf_path: Path
+    ) -> list[dict[str, Any]]:
+        """Extract text from CNIPA Guidelines for Patent Examination.
+
+        The Guidelines are structured as Parts (I–VI) with Chapters. Headers
+        like "Part II Chapter 2" or "Chapter 3" are detected for section
+        labels; otherwise pages are chunked under the current part/chapter.
+        """
+        import re
+
+        chunks = []
+        doc = None
+        try:
+            doc = fitz.open(pdf_path)  # type: ignore[union-attr]
+            current_section = "CN Examination Guidelines"
+
+            for page_num, page in enumerate(doc):  # type: ignore[arg-type]
+                text = page.get_text()
+                if not text.strip():
+                    continue
+
+                # Detect "Part II", "Part III Chapter 2", "Chapter 5", etc.
+                part_match = re.search(
+                    r"Part\s+([IVX]+)(?:\s+Chapter\s+(\d+))?\s*\n?\s*([^\n]{0,100})",
+                    text,
+                )
+                chapter_match = re.search(
+                    r"^\s*Chapter\s+(\d+)\s*\n?\s*([^\n]{0,100})", text, re.MULTILINE
+                )
+
+                if part_match:
+                    part_num = part_match.group(1)
+                    chap_num = part_match.group(2)
+                    title = part_match.group(3).strip()
+                    label = f"CN Guidelines Part {part_num}"
+                    if chap_num:
+                        label += f" Ch. {chap_num}"
+                    if title:
+                        label += f" - {title}"
+                    current_section = label
+                elif chapter_match:
+                    chap_num = chapter_match.group(1)
+                    title = chapter_match.group(2).strip()
+                    current_section = (
+                        f"CN Guidelines Ch. {chap_num} - {title}"
+                        if title
+                        else f"CN Guidelines Ch. {chap_num}"
+                    )
+
+                page_chunks = self._chunk_text_with_metadata(
+                    text=text,
+                    section_label=current_section,
+                    base_metadata={
+                        "source": "CN_GUIDELINES",
+                        "file": pdf_path.name,
+                        "section": current_section,
+                        "page": page_num + 1,
+                        "is_statute": False,
+                        "is_regulation": False,
+                        "is_update": False,
+                    },
+                )
+                chunks.extend(page_chunks)
+
+        except Exception as e:
+            _log_error(
+                f"Error processing CN Examination Guidelines {pdf_path}: {e}",
+                exc_info=True,
+                file_path=str(pdf_path),
+            )
+        finally:
+            if doc is not None:
+                doc.close()
+
+        _log_info(
+            f"Extracted {len(chunks)} CN Examination Guidelines chunks",
+            chunk_count=len(chunks),
+        )
+        return chunks
+
     def _offer_pdf_cleanup(self):
         """Ask user if they want to delete PDF files after successful indexing"""
 
@@ -796,6 +1110,33 @@ class MPEPIndex:
     def build_index(self, force_rebuild: bool = False):
         """Build or load the FAISS index with BM25"""
         _log_info("build_index_started", force_rebuild=force_rebuild)
+
+        # Detect mode/dimension mismatch against any existing manifest before
+        # touching the FAISS file. A mismatch forces a rebuild rather than
+        # crashing later at query time when shape mismatches surface.
+        if not force_rebuild and self.manifest_file.exists():
+            try:
+                with self.manifest_file.open(encoding="utf-8") as mf:
+                    manifest = json.load(mf)
+                stored_mode = manifest.get("embedding_mode")
+                stored_dim = manifest.get("dimension")
+                if stored_mode and stored_mode != self.embedding_mode:
+                    _log_warning(
+                        f"Index was built in mode='{stored_mode}' but current mode='{self.embedding_mode}'. "
+                        "Forcing rebuild to keep embedding space consistent.",
+                        stored_mode=stored_mode,
+                        current_mode=self.embedding_mode,
+                    )
+                    force_rebuild = True
+                elif stored_dim and stored_dim != self.expected_dimension:
+                    _log_warning(
+                        f"Index dimension {stored_dim} does not match current model dimension "
+                        f"{self.expected_dimension}. Forcing rebuild.",
+                    )
+                    force_rebuild = True
+            except Exception as e:
+                _log_warning(f"Could not read index manifest: {e}. Continuing.", error=str(e))
+
         if not force_rebuild and self.index_file.exists() and self.metadata_file.exists():
             # Load existing index
             self.index = faiss.read_index(str(self.index_file))  # type: ignore[union-attr]
@@ -806,6 +1147,7 @@ class MPEPIndex:
             _log_info(
                 f"Loaded existing index with {len(self.chunks)} chunks",
                 chunk_count=len(self.chunks),
+                embedding_mode=self.embedding_mode,
             )
 
             # Load BM25 tokenized corpus from JSON and rebuild index
@@ -818,7 +1160,7 @@ class MPEPIndex:
                     _log_info("Hybrid search enabled")
                 except Exception as e:
                     _log_warning(f"Failed to load BM25 index: {e}, rebuilding...", error=str(e))
-                    tokenized = [chunk.lower().split() for chunk in self.chunks]
+                    tokenized = [_tokenize_for_bm25(chunk) for chunk in self.chunks]
                     self.bm25 = BM25Okapi(tokenized)
             return
 
@@ -921,6 +1263,55 @@ class MPEPIndex:
             all_chunks.extend(pct_guide_chunks)
             _log_info(f"Extracted {len(pct_guide_chunks)} PCT Guidelines chunks", chunk_count=len(pct_guide_chunks))
 
+        # 10. Process CN Patent Law (PRC, 4th rev.)
+        try:
+            from cnipa_downloaders import (
+                CN_GUIDELINES_FILE,
+                CN_PATENT_LAW_FILE,
+                CN_REGULATIONS_FILE,
+            )
+        except ImportError:
+            CN_PATENT_LAW_FILE = CN_REGULATIONS_FILE = CN_GUIDELINES_FILE = None
+
+        if CN_PATENT_LAW_FILE:
+            cn_law_file = MPEP_DIR / CN_PATENT_LAW_FILE
+            if cn_law_file.exists():
+                _log_info("Processing CN Patent Law (PRC, 4th rev.)...")
+                cn_law_chunks = self.extract_text_from_cn_patent_law(cn_law_file)
+                all_chunks.extend(cn_law_chunks)
+                _log_info(
+                    f"Extracted {len(cn_law_chunks)} CN Patent Law chunks",
+                    chunk_count=len(cn_law_chunks),
+                )
+            else:
+                _log_info("CN Patent Law not found (optional: run --download-cn to add CN sources)")
+
+        # 11. Process CN Implementing Regulations
+        if CN_REGULATIONS_FILE:
+            cn_regs_file = MPEP_DIR / CN_REGULATIONS_FILE
+            if cn_regs_file.exists():
+                _log_info("Processing CN Implementing Regulations...")
+                cn_regs_chunks = self.extract_text_from_cn_regulations(cn_regs_file)
+                all_chunks.extend(cn_regs_chunks)
+                _log_info(
+                    f"Extracted {len(cn_regs_chunks)} CN Regulations chunks",
+                    chunk_count=len(cn_regs_chunks),
+                )
+            else:
+                _log_info("CN Implementing Regulations not found (optional: run --download-cn to add)")
+
+        # 12. Process CNIPA Examination Guidelines (if present — usually placed manually)
+        if CN_GUIDELINES_FILE:
+            cn_guide_file = MPEP_DIR / CN_GUIDELINES_FILE
+            if cn_guide_file.exists():
+                _log_info("Processing CNIPA Examination Guidelines...")
+                cn_guide_chunks = self.extract_text_from_cn_examination_guidelines(cn_guide_file)
+                all_chunks.extend(cn_guide_chunks)
+                _log_info(
+                    f"Extracted {len(cn_guide_chunks)} CN Examination Guidelines chunks",
+                    chunk_count=len(cn_guide_chunks),
+                )
+
         if not all_chunks:
             raise ValueError(
                 "No chunks extracted from any sources. Run patent-creator setup to download sources."
@@ -981,10 +1372,10 @@ class MPEPIndex:
 
             self.metadata.append(meta)
 
-        # Build BM25 index for hybrid search
+        # Build BM25 index for hybrid search (CJK-aware tokenization for ZH chunks)
         if BM25_AVAILABLE and BM25Okapi:
             _log_info("Building BM25 index for hybrid search...")
-            tokenized = [chunk.lower().split() for chunk in texts]
+            tokenized = [_tokenize_for_bm25(chunk) for chunk in texts]
             self.bm25 = BM25Okapi(tokenized)
             # Persist tokenized corpus as JSON (avoids insecure pickle deserialization)
             with self.bm25_file.open("w", encoding="utf-8") as bf:
@@ -995,6 +1386,17 @@ class MPEPIndex:
         faiss.write_index(self.index, str(self.index_file))  # type: ignore[union-attr]
         with self.metadata_file.open("w", encoding="utf-8") as f:
             json.dump({"chunks": self.chunks, "metadata": self.metadata}, f)
+
+        # Sidecar manifest so load-time can detect mode/dimension mismatches
+        manifest = {
+            "embedding_mode": self.embedding_mode,
+            "embedding_model": self.embedding_model_name,
+            "reranker_model": self.reranker_model_name,
+            "dimension": int(dimension),
+            "chunk_count": len(self.chunks),
+        }
+        with self.manifest_file.open("w", encoding="utf-8") as mf:
+            json.dump(manifest, mf, indent=2)
 
         _log_info(
             f"Index built and saved with {len(self.chunks)} chunks", chunk_count=len(self.chunks)
@@ -1079,7 +1481,7 @@ class MPEPIndex:
 
             # Hybrid search: add BM25 results if available
             if self.bm25:
-                tokenized_query = search_query.lower().split()
+                tokenized_query = _tokenize_for_bm25(search_query)
                 bm25_scores = self.bm25.get_scores(tokenized_query)
                 bm25_top_indices = np.argsort(bm25_scores)[::-1][:retrieve_k]  # type: ignore[union-attr]
 

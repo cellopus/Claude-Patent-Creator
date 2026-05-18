@@ -62,18 +62,22 @@ pip install git+https://github.com/RobThePCGuy/Claude-Patent-Creator.git && pate
 | Feature | Description | Status |
 |---------|-------------|--------|
 | **MPEP Search** | Search Manual of Patent Examining Procedure + 35 USC + 37 CFR | Ready |
-| **Patent Law Search** | Cross-jurisdiction search across US, EPO, and PCT law | Ready |
+| **Patent Law Search** | Cross-jurisdiction search across US, EPO, PCT, and CN law | Ready |
 | **Patent Search** | Search 100M+ worldwide patents via BigQuery | Ready |
 | **EPO Patent Search** | Search EP patents via EPO OPS API (full-text claims) | Ready |
+| **CN Patent Search** | Search CN patents via BigQuery (15M+ CN publications) | Ready |
 | **IPC Search** | Search patents by IPC classification code | Ready |
 | **Patent Family Search** | Find related patents across jurisdictions | Ready |
 | **US Claims Review** | Automated 35 USC 112(b) compliance checking | Ready |
 | **EPO Claims Review** | Art. 84 EPC compliance checking (Art. 123(2) added-matter not implemented) | Partial |
+| **CN Claims Review** | Art. 26.4 + Art. 25 + Rules 21/22/23 (Art. 33 added-matter not implemented) | Partial |
 | **US Specification Review** | Written description, enablement, best mode analysis | Ready |
 | **EPO Specification Review** | Art. 83 EPC sufficiency of disclosure (Art. 123(2) added-matter not implemented) | Partial |
+| **CN Specification Review** | Art. 26.3 sufficiency + Rule 17 structure + Summary triple (Art. 33 added-matter not implemented) | Partial |
 | **US Formalities Check** | MPEP 608 compliance (abstract, title, drawings) | Ready |
 | **EPO Formalities Check** | Rules 42-49 EPC compliance | Ready |
 | **PCT Formalities Check** | PCT Rules 5-12 compliance | Ready |
+| **CN Formalities Check** | Rules 17, 19, 20, 22, 24 (incl. Rule 22 multi-multi ban, 300-char abstract) | Ready |
 | **Diagram Generation** | Patent-style technical diagrams (Graphviz) | Ready |
 | **Patent Creation** | Complete patent application drafting workflow | Ready |
 
@@ -82,8 +86,9 @@ pip install git+https://github.com/RobThePCGuy/Claude-Patent-Creator.git && pate
 ```
 FastMCP (MCP Server Framework)
 +- RAG Pipeline: FAISS + BM25 + HyDE + Cross-Encoder Reranking
-+- Embeddings: BGE-base-en-v1.5 (768-dim)
-+- Reranker: MS-MARCO MiniLM-L-6-v2
++- Embeddings: BGE-base-en-v1.5 (768-dim, default) | BGE-M3 (1024-dim, opt-in via PATENT_EMBEDDING_MODE=multilingual)
++- Reranker:   MS-MARCO MiniLM-L-6-v2 (default) | bge-reranker-v2-m3 (multilingual mode)
++- BM25 tokenizer: whitespace (default) | jieba word-segmentation for CJK chunks (multilingual mode + optional dep)
 +- Patent Search: Google BigQuery (100M+ patents worldwide)
 +- EPO Search: EPO OPS API v3.2 (EP full-text claims/description)
 +- Legal Sources: MPEP + 35 USC + 37 CFR + EPC + EPO Guidelines + PCT Rules
@@ -117,6 +122,8 @@ Claude will automatically activate specialized skills based on your task. These 
 | **epo-patent-search** | Searching EP patents via EPO OPS + BigQuery | EPO OPS API + BigQuery cross-jurisdiction search |
 | **pct-application** | Preparing PCT international applications | PCT Rules 5-12 compliance, unity of invention |
 | **epc-search** | Searching EPC, EPO Guidelines, PCT rules | `search_patent_law` with jurisdiction filtering |
+| **cnipa-patent-analyzer** | Reviewing patents for CNIPA (China) compliance | Art. 26.4 (claims), Art. 25 (excluded subject matter), Art. 26.3 (sufficiency), Rule 17 (structure + Summary triple), Rule 22 (multi-multi) |
+| **cnipa-search** | Searching CN patents via BigQuery + INPADOC family pivots | `country="CN"` keyword/CPC/IPC search, family expansion |
 
 Each skill includes its reference documentation in `skills/[skill-name]/SKILL.md`.
 
@@ -130,6 +137,8 @@ For long-running, complex workflows that benefit from context isolation, use spe
 |----------|----------|----------|------------------|
 | **patent-creator** | Drafting complete patent applications autonomously (markdown + SVG output; DOCX/PDF conversion required before filing) | ~55-80 min | Draft filing package (specification, claims, abstract, diagrams, validation report) |
 | **prior-art-searcher** | Conducting comprehensive prior art searches without interruption | 15-30 min | Patentability report (novelty/obviousness analysis, top 10 prior art, claim strategy, IDS list) |
+| **cnipa-drafter** | Drafting CN-compliant claims and specifications (Rule 17 canonical order + Summary triple, Rule 22-safe dependencies, Art. 25(3) avoidance) | 30-180 min | CN claims, specification, abstract, and compliance reports |
+| **cnipa-patent-specialist** | Reviewing CN applications for Art. 26.4 / Art. 26.3 / Art. 25 + Rules 17/19/20/22/24 | 15-30 min | Triaged issue list with CN citations and fix suggestions |
 
 ### When to Use Subagents vs Skills
 
@@ -169,6 +178,10 @@ Quick-access workflows for common patent tasks:
 | `/check-pct-formalities` | PCT Rules 5-12 formalities check | PCT international application compliance |
 | `/create-epo-patent` | EPO patent creation workflow | Create patent targeting EPO filing |
 | `/search-epo` | EPO patent search | Search via EPO OPS API + BigQuery |
+| `/create-cnipa-patent` | CNIPA (China) patent creation workflow | Create patent targeting CN filing (Rule 17 canonical order + Summary triple + Rule 22-safe dependencies) |
+| `/review-cnipa-claims` | CN Art. 26.4 + Art. 25 + Rules 21/22/23 claims analysis | Claims review for CN compliance |
+| `/review-cnipa-specification` | CN Art. 26.3 + Rule 17 specification review | Specification review including Summary "triple" |
+| `/review-cnipa-formalities` | CN Rules 17, 19, 20, 22, 24 formalities check | Formalities review including 300-char abstract and Rule 22 multi-multi audit |
 
 ---
 
@@ -406,6 +419,7 @@ PATENT_LOG_FORMAT=human            # Log format
 PATENT_ENABLE_METRICS=true         # Performance tracking
 PATENT_MPEP_USE_HYDE=false         # HyDE for MPEP
 PATENT_OPERATION_TIMEOUT=300       # Operation timeout (seconds)
+PATENT_EMBEDDING_MODE=english      # english (default) | multilingual (BGE-M3 + jieba)
 
 # Windows only
 CLAUDE_CODE_GIT_BASH_PATH=C:\dev\Git\bin\bash.exe

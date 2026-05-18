@@ -16,6 +16,7 @@ JURISDICTION_SOURCES = {
     "US": ["MPEP", "35_USC", "37_CFR", "SUBSEQUENT"],
     "EPO": ["EPC", "EPC_RULES", "EPO_GUIDELINES"],
     "PCT": ["PCT", "PCT_RULES"],
+    "CN": ["CN_PATENT_LAW", "CN_REGULATIONS", "CN_GUIDELINES"],
 }
 
 
@@ -86,7 +87,11 @@ def register_patent_law_tools(
             if jurisdiction:
                 source_filters = JURISDICTION_SOURCES.get(jurisdiction)
                 if not source_filters:
-                    return [{"error": f"Unknown jurisdiction: {jurisdiction}. Use US, EPO, or PCT."}]
+                    return [
+                        {
+                            "error": f"Unknown jurisdiction: {jurisdiction}. Use US, EPO, PCT, or CN."
+                        }
+                    ]
 
             # Search the unified index
             # If jurisdiction specified, search each source and combine
@@ -126,6 +131,8 @@ def register_patent_law_tools(
                         r["jurisdiction"] = "EPO"
                     elif source in JURISDICTION_SOURCES["PCT"]:
                         r["jurisdiction"] = "PCT"
+                    elif source in JURISDICTION_SOURCES["CN"]:
+                        r["jurisdiction"] = "CN"
                     else:
                         r["jurisdiction"] = "US"  # Default for legacy sources
 
